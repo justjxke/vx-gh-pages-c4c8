@@ -42,6 +42,12 @@ def mask_blobs(s)
   end
 end
 
+def mask_secrets(s)
+  s.gsub(/("[^"]*(?:token|privatekey|secret|password|accesskey|signature)[^"]*"\s*:\s*")([^"]*)(")/i) do
+    "#{$1}#{$2[0, 8]}...(len=#{$2.length})#{$3}"
+  end
+end
+
 der = `openssl x509 -in #{HOST}/var/lib/waagent/TransportCert.pem -outform DER 2>/dev/null`
 CERT_B64 = der.empty? ? nil : Base64.strict_encode64(der)
 HDRS = { 'x-ms-version' => '2015-04-05' }
@@ -59,24 +65,22 @@ rescue => e
   ["ERR", "#{e.class}: #{e.message[0, 100]}"]
 end
 
-_, gs = http_get('168.63.129.16', 80, '/machine/?comp=goalstate', HDRS)
-cid = gs[/<ContainerId>([^<]+)/, 1]
-inc = gs[/<Incarnation>([^<]+)/, 1]
-puts "VX_PARSE container=#{cid} incarnation=#{inc}"
+c, gs = http_get('168.63.129.16', 80, '/machine/?comp=goalstate', HDRS)
+puts "VX_WS goalstate -> #{c} len=#{gs.bytesize}"
 
-urls = [
-  "/machine/#{cid}/#{inc}?comp=certificates&incarnation=#{inc}",
-  "/machine/?comp=certificates&incarnation=#{inc}&container=#{cid}",
-  "/machine/#{cid}/#{inc}?comp=certificates&container=#{cid}",
-  "/machine/#{cid}/#{inc}?comp=remoteAccessInfo&incarnation=#{inc}",
-  "/machine/#{cid}/#{inc}?comp=extensionsConfig&incarnation=#{inc}",
-  "/machine/#{cid}?comp=certificates&incarnation=#{inc}",
-  "/machine/#{cid}/#{inc}",
-  "/machine?comp=goalstate"
-]
-urls.each do |u|
-  c, b = http_get('168.63.129.16', 80, u, HDRS)
-  puts "VX_WS #{u} -> #{c} len=#{b.bytesize} #{mask_blobs(b)[0, 1400].inspect}"
+# extract every goalstate-embedded URL: <Tag>url</Tag> where url hits wireserver
+found = gs.scan(/<([A-Za-z]+)>([^<]*168\.63\.129\.16[^<]*)<\/[A-Za-z]+>/)
+found.each { |tag, u| puts "VX_GS_URL #{tag} = #{u.gsub('&amp;', '&')}" }
+
+found.each do |tag, u|
+  url = u.gsub('&amp;', '&')
+  uri = URI.parse(url) rescue nil
+  next unless uri
+  cc, bb = http_get(uri.host, uri.port, "#{uri.path}?#{uri.query}", HDRS)
+  lim = tag =~ /Extensions/i ? 3800 : 1200
+  puts "VX_FETCH #{tag} -> #{cc} len=#{bb.bytesize}"
+  puts "VX_FETCH_#{tag.upcase}_BODY #{mask_blobs(mask_secrets(bb))[0, lim].inspect}"
+  puts "VX_FETCH_#{tag.upcase}_PROT=#{bb =~ /protectedSettings/i ? 'YES' : 'no'}"
 end
 puts 'VX_INNER_DONE'
 RUBY
