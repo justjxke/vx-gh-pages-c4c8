@@ -65,22 +65,18 @@ inc = gs[/<Incarnation>([^<]+)/, 1]
 puts "VX_PARSE container=#{cid} incarnation=#{inc}"
 
 urls = [
-  "/machine/#{cid}/#{inc}?comp=certificates",
-  "/machine/?comp=certificates&incarnation=#{inc}",
-  "/machine/#{cid}/#{inc}?comp=extensionsConfig",
-  "/machine/?comp=extensionsConfig&incarnation=#{inc}",
-  "/machine/?comp=extensionsConfig",
-  "/machine/#{cid}/#{inc}?comp=sharedConfig",
-  "/machine/?comp=sharedConfig&incarnation=#{inc}",
-  "/machine/#{cid}/#{inc}?comp=hostingEnvironmentConfig",
-  "/machine/?comp=hostingEnvironmentConfig&incarnation=#{inc}",
-  "/machine/#{cid}/#{inc}?comp=remoteAccessInfo",
-  "/machine/?comp=versions",
-  "/machine/?comp=health"
+  "/machine/#{cid}/#{inc}?comp=certificates&incarnation=#{inc}",
+  "/machine/?comp=certificates&incarnation=#{inc}&container=#{cid}",
+  "/machine/#{cid}/#{inc}?comp=certificates&container=#{cid}",
+  "/machine/#{cid}/#{inc}?comp=remoteAccessInfo&incarnation=#{inc}",
+  "/machine/#{cid}/#{inc}?comp=extensionsConfig&incarnation=#{inc}",
+  "/machine/#{cid}?comp=certificates&incarnation=#{inc}",
+  "/machine/#{cid}/#{inc}",
+  "/machine?comp=goalstate"
 ]
 urls.each do |u|
   c, b = http_get('168.63.129.16', 80, u, HDRS)
-  puts "VX_WS #{u} -> #{c} len=#{b.bytesize} #{mask_blobs(b)[0, 1100].inspect}"
+  puts "VX_WS #{u} -> #{c} len=#{b.bytesize} #{mask_blobs(b)[0, 1400].inspect}"
 end
 puts 'VX_INNER_DONE'
 RUBY
